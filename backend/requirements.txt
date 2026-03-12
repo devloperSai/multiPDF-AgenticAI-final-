@@ -1,0 +1,17 @@
+marker-pdf
+unstructured[all-docs]
+celery
+redis
+sentence-transformers
+chromadb
+rank-bm25
+langchain==0.3.*
+langchain-google-genai
+langgraph
+ragas
+fastapi
+uvicorn
+python-multipart
+sse-starlette
+python-dotenv
+torch
