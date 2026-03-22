@@ -6,6 +6,7 @@ from core.tools import TOOLS, TOOL_DESCRIPTIONS
 from graph.state import AgentState
 from graph.model_router import get_llm_config
 from memory.context_builder import build_memory_context
+from memory.session_store import get_document_summaries
 from models.database import SessionLocal
 
 load_dotenv()
@@ -102,8 +103,20 @@ def agentic_generate_node(state: AgentState) -> AgentState:
     db = SessionLocal()
     try:
         memory_context = build_memory_context(db, session_id)
+        doc_summaries  = get_document_summaries(db, session_id)
     finally:
         db.close()
+
+    # Enhancement #15 — always inject doc summaries when available
+    doc_summary_context = ""
+    if doc_summaries:
+        summary_lines = []
+        for ds in doc_summaries:
+            summary_lines.append(
+                f"Document: {ds['filename']} ({ds['doc_type']})\n{ds['summary']}"
+            )
+        doc_summary_context = "\n\n".join(summary_lines)
+        print(f"[agent] Injecting {len(doc_summaries)} doc summaries for intent={intent}")
 
     model = llm_config.get("model", "llama-3.3-70b-versatile")
     temperature = llm_config.get("temperature", 0.2)
@@ -123,11 +136,14 @@ Rules:
 
 {doc_type_suffix}"""
 
+    # Build summary section cleanly
+    summary_section = f"\n\nDocument summaries for reference:\n{doc_summary_context}" if doc_summary_context else ""
+
     # Start conversation with initial context
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"""Conversation history:
-{memory_context or "None"}
+{memory_context or "None"}{summary_section}
 
 Initial context from documents:
 {initial_context}

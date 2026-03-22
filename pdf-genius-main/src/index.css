@@ -1,0 +1,135 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 20% 97%;
+    --foreground: 220 20% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 20% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 20% 10%;
+    --primary: 172 66% 50%;
+    --primary-foreground: 220 25% 8%;
+    --secondary: 220 14% 92%;
+    --secondary-foreground: 220 20% 20%;
+    --muted: 220 14% 94%;
+    --muted-foreground: 220 10% 46%;
+    --accent: 172 66% 50%;
+    --accent-foreground: 220 25% 8%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 89%;
+    --input: 220 13% 89%;
+    --ring: 172 66% 50%;
+    --radius: 0.75rem;
+
+    --surface-1: 220 20% 97%;
+    --surface-2: 0 0% 100%;
+    --surface-3: 220 14% 94%;
+    --sidebar-bg: 220 25% 11%;
+    --sidebar-fg: 220 10% 75%;
+    --sidebar-active: 172 66% 50%;
+    --sidebar-hover: 220 20% 16%;
+    --chat-user: 172 66% 50%;
+    --chat-ai: 220 20% 94%;
+    --gradient-primary: linear-gradient(135deg, hsl(172, 66%, 50%), hsl(199, 89%, 48%));
+    --shadow-soft: 0 1px 3px 0 rgba(0,0,0,0.06), 0 1px 2px -1px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -2px rgba(0,0,0,0.07);
+    --shadow-lg: 0 10px 25px -5px rgba(0,0,0,0.08), 0 8px 10px -6px rgba(0,0,0,0.06);
+  }
+
+  .dark {
+    --background: 220 25% 8%;
+    --foreground: 220 10% 90%;
+    --card: 220 22% 12%;
+    --card-foreground: 220 10% 90%;
+    --popover: 220 22% 12%;
+    --popover-foreground: 220 10% 90%;
+    --primary: 172 66% 50%;
+    --primary-foreground: 220 25% 8%;
+    --secondary: 220 20% 16%;
+    --secondary-foreground: 220 10% 80%;
+    --muted: 220 20% 16%;
+    --muted-foreground: 220 10% 55%;
+    --accent: 172 66% 50%;
+    --accent-foreground: 220 25% 8%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 20% 18%;
+    --input: 220 20% 18%;
+    --ring: 172 66% 50%;
+
+    --surface-1: 220 25% 8%;
+    --surface-2: 220 22% 12%;
+    --surface-3: 220 20% 16%;
+    --sidebar-bg: 220 25% 6%;
+    --sidebar-fg: 220 10% 65%;
+    --sidebar-active: 172 66% 50%;
+    --sidebar-hover: 220 20% 12%;
+    --chat-user: 172 66% 50%;
+    --chat-ai: 220 22% 14%;
+    --shadow-soft: 0 1px 3px 0 rgba(0,0,0,0.2);
+    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.3);
+    --shadow-lg: 0 10px 25px -5px rgba(0,0,0,0.4);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+}
+
+@layer utilities {
+  .gradient-primary {
+    background: var(--gradient-primary);
+  }
+  .shadow-soft {
+    box-shadow: var(--shadow-soft);
+  }
+  .shadow-card {
+    box-shadow: var(--shadow-md);
+  }
+  .shadow-elevated {
+    box-shadow: var(--shadow-lg);
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted)) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 3px;
+  }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse-dot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s ease-out forwards;
+}
+.typing-dot {
+  animation: pulse-dot 1.4s infinite ease-in-out both;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.16s; }
+.typing-dot:nth-child(3) { animation-delay: 0.32s; }

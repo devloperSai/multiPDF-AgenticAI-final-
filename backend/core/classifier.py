@@ -1,110 +1,293 @@
-import requests
+"""
+core/classifier.py
+
+3-signal document classification:
+  Signal 1 — Filename pattern matching  (weight: 0.40)
+  Signal 2 — Embedding cosine similarity (weight: 0.40)
+  Signal 3 — Keyword rule-based         (weight: 0.20)
+
+Weighted combination corrects for cases where one signal is weak or wrong.
+Example: research paper about legal AI
+  - keywords say "legal" (wrong)
+  - filename says "research" (right)
+  - embeddings say "research" (right)
+  - combined → "research" ✓
+"""
+
+import re
 import os
-from dotenv import load_dotenv
+from typing import Dict
 
-load_dotenv()
+# ── Signal 1: Filename patterns ───────────────────────────────────────────────
 
-HF_API_URL = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
-CANDIDATE_LABELS = ["research paper", "legal document", "financial report", "general document"]
-
-LABEL_MAP = {
-    "research paper": "research",
-    "legal document": "legal",
-    "financial report": "financial",
-    "general document": "general"
+FILENAME_PATTERNS = {
+    "legal": [
+        "nda", "agreement", "contract", "legal", "terms", "conditions",
+        "policy", "compliance", "disclosure", "memorandum", "affidavit",
+        "deed", "clause", "mou", "settlement", "license", "licence",
+        "privacy", "gdpr", "consent", "liability", "indemnity", "waiver",
+        "confidential", "intellectual", "property", "trademark", "patent",
+        "copyright", "employment", "service", "vendor", "consulting"
+    ],
+    "research": [
+        "paper", "research", "study", "analysis", "survey", "arxiv",
+        "journal", "thesis", "dissertation", "review", "proceedings",
+        "abstract", "preprint", "publication", "conference", "workshop",
+        "findings", "report", "experiment", "evaluation", "benchmark"
+    ],
+    "financial": [
+        "financial", "finance", "revenue", "budget", "invoice", "balance",
+        "quarterly", "annual", "profit", "loss", "tax", "audit", "statement",
+        "earnings", "fiscal", "accounting", "ledger", "payroll", "expense",
+        "forecast", "valuation", "portfolio", "investment", "fund"
+    ],
+    "general": [
+        "guide", "manual", "handbook", "tutorial", "overview", "summary",
+        "brochure", "catalog", "catalogue", "newsletter", "presentation",
+        "slides", "info", "faq", "readme", "wiki", "tour", "darshan"
+    ]
 }
 
 
-def classify_document(text: str) -> str:
+def _classify_from_filename(filename: str) -> Dict[str, float]:
     """
-    Classify document using HuggingFace zero-shot classification.
-    Uses facebook/bart-large-mnli — free, no billing required.
-    Falls back to rule-based if API fails.
+    Score doc types based on filename tokens.
+    Returns normalized scores summing to 1.0.
+    """
+    if not filename:
+        return {"legal": 0.25, "research": 0.25, "financial": 0.25, "general": 0.25}
+
+    # Normalize: lowercase, split on _ - . spaces digits
+    name = os.path.splitext(filename.lower())[0]
+    name = re.sub(r'[_\-\.\s\d]+', ' ', name)
+    tokens = set(name.split())
+
+    scores = {"legal": 0.0, "research": 0.0, "financial": 0.0, "general": 0.0}
+
+    for doc_type, patterns in FILENAME_PATTERNS.items():
+        for token in tokens:
+            if token in patterns:
+                scores[doc_type] += 1.0
+            # Partial match for compound words like "nondisclosure"
+            for pattern in patterns:
+                if len(pattern) > 4 and pattern in name:
+                    scores[doc_type] += 0.5
+
+    total = sum(scores.values())
+    if total == 0:
+        # No filename signal — return uniform distribution
+        return {"legal": 0.25, "research": 0.25, "financial": 0.25, "general": 0.25}
+
+    # Normalize
+    return {k: v / total for k, v in scores.items()}
+
+
+# ── Signal 2: Embedding similarity ───────────────────────────────────────────
+
+# Reference descriptions — what each doc type "looks like" semantically
+REFERENCE_DESCRIPTIONS = {
+    "legal": (
+        "This is a legal document containing contracts, agreements, clauses, "
+        "obligations, rights, terms and conditions, liability, jurisdiction, "
+        "parties, warranties, indemnification, confidentiality, governing law, "
+        "representations, breach, remedy, enforcement, arbitration, executed."
+    ),
+    "research": (
+        "This is a research paper containing abstract, introduction, methodology, "
+        "literature review, findings, conclusions, citations, experiments, "
+        "hypothesis, results, analysis, dataset, evaluation, benchmark, "
+        "proposed method, algorithm, neural network, training, model performance."
+    ),
+    "financial": (
+        "This is a financial document containing revenue, profit, loss, balance sheet, "
+        "income statement, cash flow, assets, liabilities, equity, earnings per share, "
+        "quarterly results, annual report, fiscal year, budget, audit, depreciation, "
+        "gross margin, net income, operating expenses, EBITDA, valuation."
+    ),
+    "general": (
+        "This is a general document containing information, descriptions, guide, "
+        "overview, summary, topics, places, travel, food, culture, history, "
+        "tourism, attractions, restaurants, locations, activities, events."
+    )
+}
+
+# Cache: reference embeddings computed once, reused for all classifications
+_reference_embeddings: Dict[str, list] = {}
+
+
+def _get_reference_embeddings() -> Dict[str, list]:
+    """
+    Compute and cache reference embeddings for each doc type.
+    Uses the same BAAI/bge-base-en-v1.5 model already loaded for chunks.
+    """
+    global _reference_embeddings
+    if _reference_embeddings:
+        return _reference_embeddings
+
+    try:
+        from core.embedder import embed_query
+        print("[classifier] Computing reference embeddings...")
+        for doc_type, description in REFERENCE_DESCRIPTIONS.items():
+            _reference_embeddings[doc_type] = embed_query(description)
+        print("[classifier] Reference embeddings ready")
+    except Exception as e:
+        print(f"[classifier] Embedding failed: {e}")
+        _reference_embeddings = {}
+
+    return _reference_embeddings
+
+
+def _cosine_similarity(vec_a: list, vec_b: list) -> float:
+    """Compute cosine similarity between two vectors."""
+    if not vec_a or not vec_b:
+        return 0.0
+    try:
+        import math
+        dot    = sum(a * b for a, b in zip(vec_a, vec_b))
+        norm_a = math.sqrt(sum(a * a for a in vec_a))
+        norm_b = math.sqrt(sum(b * b for b in vec_b))
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+    except Exception:
+        return 0.0
+
+
+def _classify_from_embedding(text: str) -> Dict[str, float]:
+    """
+    Score doc types by cosine similarity between doc embedding
+    and reference description embeddings.
+    Returns normalized scores.
     """
     try:
-        excerpt = text[:1000].strip()
+        from core.embedder import embed_query
+
+        ref_embeddings = _get_reference_embeddings()
+        if not ref_embeddings:
+            return {"legal": 0.25, "research": 0.25, "financial": 0.25, "general": 0.25}
+
+        # Use first 512 tokens worth of text for classification
+        excerpt = text[:2000].strip()
         if not excerpt:
-            return "general"
+            return {"legal": 0.25, "research": 0.25, "financial": 0.25, "general": 0.25}
 
-        headers = {"Authorization": f"Bearer {os.getenv('HF_API_KEY')}"}
-        payload = {
-            "inputs": excerpt,
-            "parameters": {"candidate_labels": CANDIDATE_LABELS}
-        }
+        doc_embedding = embed_query(excerpt)
 
-        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=30)
+        scores = {}
+        for doc_type, ref_emb in ref_embeddings.items():
+            scores[doc_type] = max(0.0, _cosine_similarity(doc_embedding, ref_emb))
 
-        if response.status_code == 503:
-            # Model is loading — wait and retry once
-            import time
-            print("[classifier] Model loading, retrying in 20s...")
-            time.sleep(20)
-            response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=30)
+        total = sum(scores.values())
+        if total == 0:
+            return {"legal": 0.25, "research": 0.25, "financial": 0.25, "general": 0.25}
 
-        response.raise_for_status()
-        result = response.json()
-
-        top_label = result["labels"][0]
-        top_score = result["scores"][0]
-        doc_type = LABEL_MAP.get(top_label, "general")
-
-        print(f"[classifier] Classified as '{doc_type}' (confidence: {round(top_score, 3)})")
-        return doc_type
+        return {k: v / total for k, v in scores.items()}
 
     except Exception as e:
-        print(f"[classifier] HF API failed: {e} — using rule-based fallback")
-        return _rule_based_classify(text)
+        print(f"[classifier] Embedding classification failed: {e}")
+        return {"legal": 0.25, "research": 0.25, "financial": 0.25, "general": 0.25}
 
 
-def _rule_based_classify(text: str) -> str:
+# ── Signal 3: Keyword rule-based ─────────────────────────────────────────────
+
+KEYWORD_SETS = {
+    "research": [
+        "abstract", "introduction", "methodology", "conclusion", "references",
+        "arxiv", "hypothesis", "experiment", "algorithm", "literature review",
+        "findings", "proposed method", "dataset", "evaluation", "benchmark",
+        "neural", "training", "model", "citation", "figure", "table", "appendix"
+    ],
+    "legal": [
+        "agreement", "contract", "whereas", "hereby", "jurisdiction",
+        "plaintiff", "defendant", "clause", "liability", "court",
+        "consultant", "indemnification", "indemnify", "reimbursement",
+        "termination", "confidentiality", "confidential information",
+        "intellectual property", "governing law", "arbitration",
+        "representations", "warranties", "obligations", "executed",
+        "effective date", "parties", "scope of work", "non-disclosure",
+        "breach", "remedy", "enforcement", "severability", "entire agreement"
+    ],
+    "financial": [
+        "revenue", "balance sheet", "profit", "loss", "fiscal",
+        "earnings", "invoice", "budget", "cash flow", "audit",
+        "assets", "liabilities", "equity", "income statement",
+        "quarterly", "annual report", "ebitda", "gross margin",
+        "net income", "operating expenses", "depreciation"
+    ],
+    "general": [
+        "welcome", "guide", "overview", "introduction to", "about us",
+        "located", "visit", "tourism", "attraction", "restaurant",
+        "hotel", "travel", "city", "culture", "history", "food"
+    ]
+}
+
+
+def _classify_from_keywords(text: str) -> Dict[str, float]:
     """
-    Fallback if HuggingFace API is unavailable.
-    Threshold lowered to 1 — any single strong keyword match is enough.
-    Keywords expanded to cover consulting agreements, NDAs, service contracts.
+    Score doc types by keyword frequency.
+    Returns normalized scores.
     """
     excerpt = text[:3000].lower()
+    scores  = {doc_type: 0.0 for doc_type in KEYWORD_SETS}
 
-    scores = {
-        "research": sum(1 for k in [
-            "abstract", "introduction", "methodology", "conclusion",
-            "references", "arxiv", "hypothesis", "experiment", "algorithm",
-            "literature review", "findings", "proposed method", "dataset",
-            "evaluation", "benchmark", "neural", "training", "model"
-        ] if k in excerpt),
+    for doc_type, keywords in KEYWORD_SETS.items():
+        for kw in keywords:
+            if kw in excerpt:
+                scores[doc_type] += 1.0
 
-        "legal": sum(1 for k in [
-            # Classic legal
-            "agreement", "contract", "whereas", "hereby", "jurisdiction",
-            "plaintiff", "defendant", "clause", "liability", "court",
-            # Contract/consulting specific
-            "consultant", "consulting", "independent contractor",
-            "indemnification", "indemnify", "reimbursement", "compensation",
-            "termination", "confidentiality", "confidential information",
-            "intellectual property", "governing law", "arbitration",
-            "representations", "warranties", "obligations", "executed",
-            "effective date", "party", "parties", "scope of work",
-            "services rendered", "non-disclosure", "proprietary",
-            "breach", "remedy", "enforcement", "severability",
-            "entire agreement", "amendment", "waiver", "notice"
-        ] if k in excerpt),
+    total = sum(scores.values())
+    if total == 0:
+        return {"legal": 0.25, "research": 0.25, "financial": 0.25, "general": 0.25}
 
-        "financial": sum(1 for k in [
-            "revenue", "balance sheet", "profit", "loss", "fiscal",
-            "earnings", "invoice", "budget", "cash flow", "audit",
-            "assets", "liabilities", "equity", "income statement",
-            "quarterly", "annual report", "ebitda", "gross margin",
-            "net income", "operating expenses", "depreciation"
-        ] if k in excerpt),
-    }
+    return {k: v / total for k, v in scores.items()}
 
-    print(f"[classifier] Rule-based scores: {scores}")
 
-    best = max(scores, key=scores.get)
+# ── Main classifier ───────────────────────────────────────────────────────────
 
-    # Threshold lowered to 1 — one strong keyword match is enough
-    # Legal documents often have very distinct vocabulary that doesn't repeat
-    if scores[best] >= 1:
-        print(f"[classifier] Rule-based: '{best}' (score: {scores[best]})")
-        return best
+# Weights for each signal
+WEIGHTS = {
+    "filename":  0.40,
+    "embedding": 0.40,
+    "keywords":  0.20,
+}
 
-    return "general"
+
+def classify_document(text: str, filename: str = "") -> str:
+    """
+    Classify document type using 3 combined signals:
+      - Filename pattern matching (0.40)
+      - Embedding cosine similarity (0.40)
+      - Keyword rule-based (0.20)
+
+    Returns: "legal" | "research" | "financial" | "general"
+    """
+    doc_types = ["legal", "research", "financial", "general"]
+
+    # Run all 3 signals
+    filename_scores  = _classify_from_filename(filename)
+    embedding_scores = _classify_from_embedding(text)
+    keyword_scores   = _classify_from_keywords(text)
+
+    # Weighted combination
+    combined = {}
+    for dt in doc_types:
+        combined[dt] = (
+            WEIGHTS["filename"]  * filename_scores.get(dt, 0.25) +
+            WEIGHTS["embedding"] * embedding_scores.get(dt, 0.25) +
+            WEIGHTS["keywords"]  * keyword_scores.get(dt, 0.25)
+        )
+
+    best       = max(combined, key=combined.get)
+    confidence = round(combined[best], 4)
+
+    print(f"[classifier] Filename:  {_fmt(filename_scores)}")
+    print(f"[classifier] Embedding: {_fmt(embedding_scores)}")
+    print(f"[classifier] Keywords:  {_fmt(keyword_scores)}")
+    print(f"[classifier] Combined → '{best}' (score: {confidence})")
+
+    return best
+
+
+def _fmt(scores: Dict[str, float]) -> str:
+    """Format scores dict for logging."""
+    return " | ".join(f"{k}:{round(v,2)}" for k, v in scores.items())

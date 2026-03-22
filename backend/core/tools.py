@@ -1,7 +1,7 @@
 import re
 from typing import Any
 from core.embedder import embed_query
-from core.vector_store import query_chunks, query_chunks_by_pdf, get_session_pdf_ids
+from core.vector_store import query_chunks, query_chunks_by_pdf, get_session_pdf_ids, get_spread_chunks
 
 
 def search_document(session_id: str, query: str, top_k: int = 4) -> list:
@@ -97,10 +97,15 @@ def calculate(expression: str) -> dict:
         return {"error": str(e), "expression": expression}
 
 
-def summarize_document(session_id: str, pdf_index: int = 0, top_k: int = 8) -> list:
+def summarize_document(session_id: str, pdf_index: int = 0, top_k: int = 10) -> list:
     """
     Tool: Get representative chunks from a document for summarization.
-    Fetches chunks spread across the document.
+
+    Uses spread retrieval — samples 1 chunk per page evenly across the document.
+    This guarantees coverage of introduction, body, and conclusion sections.
+
+    Old approach used embedding similarity ("main topic introduction conclusion")
+    which biased toward specific pages matching those words — not a true spread.
     """
     try:
         pdf_ids = get_session_pdf_ids(session_id)
@@ -108,21 +113,23 @@ def summarize_document(session_id: str, pdf_index: int = 0, top_k: int = 8) -> l
             return [{"error": "No documents found"}]
 
         pdf_index = min(pdf_index, len(pdf_ids) - 1)
-        pdf_id = pdf_ids[pdf_index]
+        pdf_id    = pdf_ids[pdf_index]
 
-        # Use broad query to get representative chunks
-        embedding = embed_query("main topic introduction conclusion summary findings")
-        chunks = query_chunks_by_pdf(session_id, embedding, pdf_id, top_k=top_k)
+        # Spread retrieval — no embedding, samples evenly across all pages
+        chunks = get_spread_chunks(session_id, pdf_id=pdf_id, max_chunks=top_k)
+
+        if not chunks:
+            return [{"error": "No content found in document"}]
 
         results = []
         for i, c in enumerate(chunks):
             results.append({
-                "index": i + 1,
-                "text": c["text"],
+                "index":       i + 1,
+                "text":        c["text"],
                 "page_number": c["metadata"].get("page_number", "unknown")
             })
 
-        print(f"[tool] summarize_document(pdf_index={pdf_index}) → {len(results)} chunks")
+        print(f"[tool] summarize_document(pdf_index={pdf_index}) → {len(results)} chunks via spread retrieval")
         return results
 
     except Exception as e:

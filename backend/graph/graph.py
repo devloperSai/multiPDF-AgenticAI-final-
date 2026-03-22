@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, END
 from graph.state import AgentState
 from graph.nodes import (
+    coref_node,
     route_node,
     retrieve_node,
     rerank_node,
@@ -16,7 +17,7 @@ def _route_after_routing(state: AgentState) -> str:
         return "cache_hit"
     if state.get("query_intent") == "out_of_scope":
         return "out_of_scope"
-    return "retrieve"
+    return "coref"    # always pass through coref before retrieve
 
 
 def _route_after_rerank(state: AgentState) -> str:
@@ -43,6 +44,7 @@ def build_graph():
 
     graph.add_node("route", route_node)
     graph.add_node("cache_hit", _cache_hit_node)
+    graph.add_node("coref", coref_node)       # coreference resolution
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("rerank", rerank_node)
     graph.add_node("generate", generate_node)
@@ -56,15 +58,16 @@ def build_graph():
         "route",
         _route_after_routing,
         {
-            "cache_hit": "cache_hit",
+            "cache_hit":   "cache_hit",
             "out_of_scope": "out_of_scope",
-            "retrieve": "retrieve"
+            "coref":       "coref"
         }
     )
 
-    graph.add_edge("cache_hit", END)
+    graph.add_edge("cache_hit",   END)
     graph.add_edge("out_of_scope", END)
-    graph.add_edge("retrieve", "rerank")
+    graph.add_edge("coref",       "retrieve")   # coref → retrieve
+    graph.add_edge("retrieve",    "rerank")
 
     graph.add_conditional_edges(
         "rerank",

@@ -2,8 +2,9 @@ from sqlalchemy.orm import Session as DBSession
 from models.schema import Session, Document
 
 
-def create_session(db: DBSession) -> Session:
-    session = Session()
+def create_session(db: DBSession, user_id: str = None) -> Session:
+    """Create a new session, optionally linked to an authenticated user."""
+    session = Session(user_id=user_id)
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -18,13 +19,19 @@ def list_sessions(db: DBSession):
     return db.query(Session).order_by(Session.updated_at.desc()).all()
 
 
-def attach_document(db: DBSession, session_id: str, filename: str, file_path: str, content_hash: str = None) -> Document:
+def attach_document(
+    db: DBSession,
+    session_id: str,
+    filename: str,
+    file_path: str,
+    content_hash: str = None,
+) -> Document:
     # Refine 14 — store content_hash at document creation time
     doc = Document(
         session_id=session_id,
         filename=filename,
         file_path=file_path,
-        content_hash=content_hash
+        content_hash=content_hash,
     )
     db.add(doc)
     db.commit()
@@ -32,7 +39,13 @@ def attach_document(db: DBSession, session_id: str, filename: str, file_path: st
     return doc
 
 
-def update_document_status(db: DBSession, doc_id: str, status: str, doc_type: str = None, chroma_pdf_id: str = None):
+def update_document_status(
+    db: DBSession,
+    doc_id: str,
+    status: str,
+    doc_type: str = None,
+    chroma_pdf_id: str = None,
+):
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if doc:
         doc.status = status
@@ -42,6 +55,50 @@ def update_document_status(db: DBSession, doc_id: str, status: str, doc_type: st
             doc.chroma_pdf_id = chroma_pdf_id
         db.commit()
     return doc
+
+
+def save_document_summary(
+    db: DBSession,
+    doc_id: str,
+    summary: str,
+) -> None:
+    """
+    Enhancement #15 — Save auto-generated document summary to PostgreSQL.
+    Called by pdf_worker after successful processing.
+    Summary is a 2-3 sentence paragraph covering: what the document is,
+    its main topic, key parties or concepts.
+    """
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if doc:
+        doc.doc_summary = summary
+        db.commit()
+        print(f"[session_store] Summary saved for doc {doc_id[:8]}... ({len(summary)} chars)")
+
+
+def get_document_summaries(db: DBSession, session_id: str) -> list:
+    """
+    Enhancement #15 — Get summaries for all completed documents in a session.
+    Returns list of dicts with filename, doc_type, summary.
+    Used by generate_node to inject document context for vague questions.
+    """
+    docs = db.query(Document).filter(
+        Document.session_id == session_id,
+        Document.status.in_(["complete", "completed"]),
+        Document.doc_summary.isnot(None)
+    ).all()
+
+    summaries = []
+    for doc in docs:
+        if doc.doc_summary:
+            summaries.append({
+                "filename":  doc.filename,
+                "doc_type":  doc.doc_type or "general",
+                "summary":   doc.doc_summary,
+                "pdf_id":    str(doc.chroma_pdf_id) if doc.chroma_pdf_id else None,
+            })
+
+    print(f"[session_store] Found {len(summaries)} document summaries for session {session_id}")
+    return summaries
 
 
 def get_session_doc_types(db: DBSession, session_id: str) -> list:
@@ -71,13 +128,15 @@ def update_session_title(db: DBSession, session_id: str, question: str):
         print(f"[session] Title set: '{title}'")
 
 
-def find_duplicate_in_session(db: DBSession, session_id: str, content_hash: str) -> Document:
+def find_duplicate_in_session(
+    db: DBSession, session_id: str, content_hash: str
+) -> Document:
     """
-    Refine 14 — Check if a document with the same content hash already exists in this session.
-    Returns the existing document if found, else None.
+    Refine 14 — Check if a document with the same content hash already exists.
+    Returns the existing Document if found, else None.
     """
     return db.query(Document).filter(
-        Document.session_id == session_id,
+        Document.session_id  == session_id,
         Document.content_hash == content_hash,
         Document.status.in_(["completed", "complete"])
     ).first()
@@ -92,23 +151,24 @@ def count_active_pdfs(db: DBSession) -> int:
     ).count()
 
 
-def get_oldest_pdfs_for_eviction(db: DBSession, exclude_session_id: str, limit: int) -> list:
+def get_oldest_pdfs_for_eviction(
+    db: DBSession, exclude_session_id: str, limit: int
+) -> list:
     """
     Global PDF eviction — get oldest completed PDFs across all sessions.
     Excludes the current active session so new uploads aren't immediately evicted.
     Returns list of Document objects ordered oldest first.
     """
-    docs = (
+    return (
         db.query(Document)
         .filter(
             Document.status.in_(["completed", "complete"]),
-            Document.session_id != exclude_session_id
+            Document.session_id != exclude_session_id,
         )
-        .order_by(Document.created_at.asc())  # oldest first
+        .order_by(Document.created_at.asc())
         .limit(limit)
         .all()
     )
-    return docs
 
 
 def mark_document_evicted(db: DBSession, doc_id: str):
@@ -135,11 +195,11 @@ def delete_document(db: DBSession, doc_id: str) -> dict:
         return None
 
     info = {
-        "doc_id": str(doc.id),
-        "session_id": str(doc.session_id),
+        "doc_id":        str(doc.id),
+        "session_id":    str(doc.session_id),
         "chroma_pdf_id": doc.chroma_pdf_id,
-        "file_path": doc.file_path,
-        "filename": doc.filename
+        "file_path":     doc.file_path,
+        "filename":      doc.filename,
     }
 
     db.delete(doc)
@@ -158,10 +218,10 @@ def delete_session(db: DBSession, session_id: str) -> list:
     docs = db.query(Document).filter(Document.session_id == session_id).all()
     doc_infos = [
         {
-            "doc_id": str(d.id),
+            "doc_id":        str(d.id),
             "chroma_pdf_id": d.chroma_pdf_id,
-            "file_path": d.file_path,
-            "filename": d.filename
+            "file_path":     d.file_path,
+            "filename":      d.filename,
         }
         for d in docs
     ]

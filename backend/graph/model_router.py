@@ -2,37 +2,52 @@ from typing import List
 from collections import Counter
 
 # Model configurations per doc type
+#
+# provider field: which provider to use for this doc type
+#   "groq"      — free, fast, default for all types
+#   "openai"    — paid, optional (only activates if OPENAI_API_KEY in .env)
+#   "anthropic" — paid, optional (only activates if ANTHROPIC_API_KEY in .env)
+#   "together"  — free fallback, not used as primary
+#
+# Current: all doc types use Groq as primary.
+# To route legal docs to Claude: change legal provider to "anthropic"
+# The fallback chain still applies regardless of primary provider.
+#
 MODEL_CONFIGS = {
     "research": {
-        "model": "llama-3.3-70b-versatile",
+        "provider":    "groq",
+        "model":       "llama-3.3-70b-versatile",
         "temperature": 0.2,
-        "max_tokens": 1500,
+        "max_tokens":  1500,
         "system_suffix": """You are analyzing a research paper.
 Focus on: methodology, findings, conclusions, and citations.
 Be precise and technical. Always distinguish between what the paper claims vs what is proven."""
     },
     "legal": {
-        "model": "llama-3.3-70b-versatile",
-        "temperature": 0.0,  # Zero temp — legal needs deterministic answers
-        "max_tokens": 1500,
+        "provider":    "groq",                     # change to "anthropic" for Claude
+        "model":       "llama-3.3-70b-versatile",
+        "temperature": 0.0,                         # zero temp — legal needs deterministic answers
+        "max_tokens":  1500,
         "system_suffix": """You are analyzing a legal document.
 Focus on: exact clauses, obligations, rights, penalties, and jurisdictions.
 Be literal and precise — never paraphrase legal terms loosely.
 Always cite the specific clause or section when answering."""
     },
     "financial": {
-        "model": "llama-3.3-70b-versatile",
+        "provider":    "groq",                     # change to "openai" for GPT-4o
+        "model":       "llama-3.3-70b-versatile",
         "temperature": 0.1,
-        "max_tokens": 1500,
+        "max_tokens":  1500,
         "system_suffix": """You are analyzing a financial document.
 Focus on: exact figures, percentages, dates, and financial terms.
 Never approximate numbers — always use exact values from the document.
 Clearly distinguish between revenue, profit, loss, and other financial metrics."""
     },
     "general": {
-        "model": "llama-3.3-70b-versatile",
+        "provider":    "groq",
+        "model":       "llama-3.3-70b-versatile",
         "temperature": 0.3,
-        "max_tokens": 1024,
+        "max_tokens":  1024,
         "system_suffix": """You are analyzing a general document.
 Provide clear, accessible answers that are easy to understand."""
     }
@@ -40,13 +55,8 @@ Provide clear, accessible answers that are easy to understand."""
 
 DEFAULT_CONFIG = MODEL_CONFIGS["general"]
 
-# Priority order — most restrictive wins
+# Priority order — most restrictive wins when mixed doc types in session
 PRIORITY = ["legal", "financial", "research", "general"]
-
-# Refine 4 — Together AI fallback model config
-# Same model family (Llama 3.3 70B) for consistent output quality
-# Only used when Groq API fails — not a primary provider
-TOGETHER_FALLBACK_MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
 
 
 def get_llm_config(doc_types: List[str]) -> dict:
